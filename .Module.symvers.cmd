@@ -1,1 +1,0 @@
-cmd_/home/ubuntu/Desktop/Dolus3/Module.symvers := sed 's/ko$$/o/' /home/ubuntu/Desktop/Dolus3/modules.order | scripts/mod/modpost -m -a  -o /home/ubuntu/Desktop/Dolus3/Module.symvers -e -i Module.symvers   -T -
