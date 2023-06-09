@@ -1,0 +1,1 @@
+cmd_/home/ubuntu/Desktop/Dolus3/Dolus.ko := ld -r -m elf_x86_64 -z noexecstack --build-id=sha1  -T scripts/module.lds -o /home/ubuntu/Desktop/Dolus3/Dolus.ko /home/ubuntu/Desktop/Dolus3/Dolus.o /home/ubuntu/Desktop/Dolus3/Dolus.mod.o;  true

