@@ -2,7 +2,7 @@
 #define DEBUG_H
 
 //uncomment next line to enable debugging
-#define DEBUG 1
+//#define DEBUG 1
 #ifdef DEBUG
 #define DEBUG_INFO(...) do { \
     printk(KERN_INFO __VA_ARGS__); \
